@@ -1,0 +1,24 @@
+{
+  "course_url": "https://studyvideoh5.zhihuishu.com/stuStudy",
+  "browser_channel": "chrome",
+  "poll_seconds": 2,
+  "ai": {
+    "base_url": "",
+    "model": "",
+    "api_key": "",
+    "min_confidence": 0.85,
+    "timeout_seconds": 45
+  },
+  "selectors": {
+    "dialog": "[role=\"dialog\"], .el-dialog, .ant-modal, .layui-layer",
+    "question": "",
+    "option": "",
+    "selected": ".is-checked, .checked, .selected",
+    "submit": "",
+    "continue": "",
+    "video": "video",
+    "player": "#vjs_container",
+    "next": "#nextBtn",
+    "lesson": "#lessonOrder"
+  }
+}
