@@ -23,7 +23,19 @@ class ConfigTests(unittest.TestCase):
     def test_environment_key_overrides_file(self):
         self.write({'course_url': 'https://studyvideoh5.zhihuishu.com/stuStudy', 'ai': {'api_key': 'old'}})
         with patch.dict(os.environ, {'ZHS_AI_API_KEY': 'test-key'}):
-            self.assertEqual(load_config(self.path)['ai']['api_key'], 'test-key')
+            config = load_config(self.path)
+            self.assertEqual(config['ai']['api_key'], 'test-key')
+            self.assertEqual(config['browser_channel'], 'auto')
+
+    def test_browser_channel_accepts_auto_and_explicit_channels(self):
+        for channel in ('auto', 'chrome', 'msedge', 'chromium'):
+            self.write({'browser_channel': channel})
+            with self.subTest(channel=channel):
+                self.assertEqual(load_config(self.path)['browser_channel'], channel)
+
+        self.write({'browser_channel': 'firefox'})
+        with self.assertRaises(ValueError):
+            load_config(self.path)
 
     def test_invalid_url(self):
         for url in ('http://studyvideoh5.zhihuishu.com/stuStudy', 'https://evil.example/stuStudy',

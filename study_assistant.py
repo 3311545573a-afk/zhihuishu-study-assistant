@@ -26,7 +26,7 @@ def load_config(path: Path) -> dict:
     if not isinstance(config, dict):
         raise ValueError("配置文件必须是 JSON 对象")
     config.setdefault("course_url", DEFAULT_URL)
-    config.setdefault("browser_channel", "chrome")
+    config.setdefault("browser_channel", "auto")
     config.setdefault("poll_seconds", 2)
     config.setdefault("ai", {})
     config.setdefault("selectors", {})
@@ -53,8 +53,8 @@ def load_config(path: Path) -> dict:
             raise ValueError(f"{name} 必须在 {low} 到 {high} 之间")
     if any(k not in DEFAULT_SELECTORS or not isinstance(v, str) for k, v in config["selectors"].items()):
         raise ValueError("selectors 包含未知名称或非字符串值")
-    if config["browser_channel"] not in ("chrome", "msedge", "chromium"):
-        raise ValueError("browser_channel 仅支持 chrome、msedge、chromium")
+    if config["browser_channel"] not in ("auto", "chrome", "msedge", "chromium"):
+        raise ValueError("browser_channel 仅支持 auto、chrome、msedge、chromium")
     return config
 
 
@@ -231,6 +231,31 @@ def run_loop(context, config: dict, inspect_only: bool = False) -> None:
             page.wait_for_timeout(config["poll_seconds"] * 1000)
 
 
+def launch_browser_context(playwright, config: dict, user_data_dir: Path):
+    """启动本机浏览器；自动模式按 Chrome、Edge 顺序回退。"""
+    requested = config["browser_channel"]
+    candidates = ("chrome", "msedge") if requested in ("auto", "chrome") else (requested,)
+    failures = []
+    for channel in candidates:
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(user_data_dir),
+                channel=None if channel == "chromium" else channel,
+                headless=False,
+                no_viewport=True,
+                args=["--start-maximized"],
+            )
+            if channel == "msedge" and requested in ("auto", "chrome"):
+                LOG.warning("Chrome 不可用，已自动切换到 Microsoft Edge")
+            LOG.info("使用浏览器：%s", channel)
+            return context, channel
+        except BrowserError as exc:
+            failures.append(f"{channel}: {exc}")
+            if channel != candidates[-1]:
+                LOG.warning("无法启动 %s，尝试下一个浏览器", channel)
+    raise BrowserError(f"无法启动可用浏览器（{'；'.join(failures)}）")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="智慧树视频播放与 AI 课中选择题助手")
     parser.add_argument("--config", type=Path, default=ROOT / "config.json", help="本机 JSON 配置")
@@ -250,12 +275,7 @@ def main() -> int:
         if not args.inspect and not all(config["ai"].get(k) for k in ("api_key", "model", "base_url")):
             LOG.warning("AI 配置尚未填齐；播放可以运行，遇到未知题将暂停自动处理")
         with sync_playwright() as p:
-            channel = config["browser_channel"]
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(ROOT / "browser_profile"),
-                channel=None if channel == "chromium" else channel,
-                headless=False, no_viewport=True, args=["--start-maximized"],
-            )
+            context, _ = launch_browser_context(p, config, ROOT / "browser_profile")
             try:
                 if SESSIONS.restore(context):
                     LOG.info('已恢复本机保存的登录会话；若平台已让会话失效，仍需重新登录')
@@ -287,7 +307,7 @@ def main() -> int:
         print(f"配置或运行错误：{exc}", file=sys.stderr)
         return 2
     except BrowserError:
-        print("浏览器启动/连接失败：请安装 Chrome，并关闭由本脚本打开的旧窗口后重试。", file=sys.stderr)
+        print("浏览器启动/连接失败：请安装 Chrome 或 Microsoft Edge，并关闭由本脚本打开的旧窗口后重试。", file=sys.stderr)
         return 3
 
 

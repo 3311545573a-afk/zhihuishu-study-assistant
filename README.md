@@ -6,7 +6,7 @@
 
 ## 环境与安装
 
-- Windows，Python 3.10+，Google Chrome。
+- Windows，Python 3.10+，Google Chrome 或 Microsoft Edge。
 - 直接依赖：`playwright==1.63.0`、`rapidocr-onnxruntime==1.2.3`。
 - 图片视觉识别需要支持 `image_url` 的 Chat Completions 接口。普通文字题只要求文本对话能力。
 
@@ -18,7 +18,7 @@ python -m venv .venv
 Copy-Item config.example.json config.json
 ```
 
-默认使用已安装的 Chrome。若使用 Playwright Chromium，将 `browser_channel` 改为 `chromium`，再运行：
+默认 `browser_channel` 为 `auto`：优先使用已安装的 Chrome，Chrome 不可用时自动使用 Microsoft Edge，不会自动下载 Chromium。若使用 Playwright Chromium，将 `browser_channel` 改为 `chromium`，再运行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m playwright install chromium
@@ -35,6 +35,7 @@ Copy-Item config.example.json config.json
 - `ai.min_confidence`：最低置信度，默认 `0.85`。
 - `ai.timeout_seconds`：单次 API 请求超时，默认 45 秒。
 - `poll_seconds`：页面轮询间隔，默认 2 秒。
+- `browser_channel`：`auto` 或 `chrome` 按 Chrome→Edge 回退，也可固定为 `msedge` 或 `chromium`。
 
 环境变量 `ZHS_AI_API_KEY`、`ZHS_AI_BASE_URL`、`ZHS_AI_MODEL` 可以覆盖配置文件中的对应字段。不要把密钥写入源码或提交到 Git。
 
@@ -52,7 +53,7 @@ Copy-Item config.example.json config.json
 .\.venv\Scripts\python.exe -X utf8 study_assistant.py
 ```
 
-1. 在脚本打开的浏览器中登录并进入具体课程视频页。
+1. 在脚本打开的 Chrome 或 Edge 中登录并进入具体课程视频页。
 2. 检测到课程后自动开始监控；若浏览器阻止首次播放，手动点击播放。
 3. 遇到练习题时读取完整题干和全部选项，再匹配可选本地题库或请求 AI。
 4. 已加载的图片即使位于弹窗滚动区域下方，也直接读取原图；未加载图片自动滚动并等待加载。点击底部选项时自动滚动。

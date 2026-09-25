@@ -1,6 +1,6 @@
 {
   "course_url": "https://studyvideoh5.zhihuishu.com/stuStudy",
-  "browser_channel": "chrome",
+  "browser_channel": "auto",
   "poll_seconds": 2,
   "ai": {
     "base_url": "",
