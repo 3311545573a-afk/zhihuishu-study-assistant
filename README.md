@@ -1,89 +1,160 @@
 # 智慧树课程学习助手
 
-基于 Python、Playwright 和兼容 Chat Completions 的 AI 接口，辅助处理课程视频中的单选、多选和判断练习题。
+使用 Python、Playwright 和兼容 Chat Completions 的 AI 接口，辅助观看课程视频、识别课中练习题和处理答题反馈。提供本机网页控制台，支持启动、停止、配置和实时日志。
 
-支持课程页面识别、题目文字提取、图片与数学公式转写、答案选择、弹题翻页和关闭、自然播放结束后切换下一节。登录会话保存在本机；图片加载和切课的临时故障会在有限时间内自动恢复，持续失败才会暂停并提示。
+## 功能
 
-## 环境与安装
+- 自动等待登录和课程加载，检测到视频后开始监控。
+- 读取单选、多选和判断题，优先匹配本地题库，再请求 AI。
+- 识别题目原图及数学公式，处理图片懒加载并缓存结果。
+- 提交前核对题目和选中状态，避免重复提交；处理反馈、翻页和关闭弹窗。
+- 视频自然播放结束后尝试切换下一节，临时加载或切课故障自动重试。
+- 保存本机登录会话，提供视频暂停/恢复、诊断检查与清理。
 
-- Windows，Python 3.10+，Google Chrome 或 Microsoft Edge。
-- 直接依赖：`playwright==1.63.0`、`rapidocr-onnxruntime==1.2.3`。
-- 图片视觉识别需要支持 `image_url` 的 Chat Completions 接口。普通文字题只要求文本对话能力。
+## 快速开始
 
-在项目目录打开 PowerShell：
+### 1. 安装环境
+
+需要 Windows、Python 3.10 或更新版本，以及 Google Chrome 或 Microsoft Edge。下载项目后，在项目目录打开 PowerShell：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item config.example.json config.json
+if (!(Test-Path config.json)) {
+    Copy-Item config.example.json config.json
+}
 ```
 
-默认 `browser_channel` 为 `auto`：优先使用已安装的 Chrome，Chrome 不可用时自动使用 Microsoft Edge，不会自动下载 Chromium。若使用 Playwright Chromium，将 `browser_channel` 改为 `chromium`，再运行：
+直接依赖为 `playwright==1.63.0` 和 `rapidocr-onnxruntime==1.2.3`。安装依赖时会安装所需的图片识别组件。
 
-```powershell
-.\.venv\Scripts\python.exe -m playwright install chromium
+### 2. 填写配置
+
+编辑 `config.json`，填写自己的课程视频页地址、AI 接口地址、模型名称和 API Key。模板只包含站点通用入口，需要替换为具体课程地址。
+
+下面展示主要字段；请将占位内容替换为自己的配置：
+
+```json
+{
+  "course_url": "https://studyvideoh5.zhihuishu.com/stuStudy",
+  "browser_channel": "auto",
+  "poll_seconds": 2,
+  "ai": {
+    "base_url": "https://ai.example/v1",
+    "model": "替换为服务商提供的模型名称",
+    "api_key": "替换为自己的 API Key",
+    "min_confidence": 0.85,
+    "timeout_seconds": 45
+  }
+}
 ```
 
-## 配置
+普通文字题需要文本对话接口；图片与公式题需要接口同时支持 `image_url`。地址必须使用 HTTPS，程序会自动追加 `/chat/completions`，也接受完整接口地址。
 
-编辑本机 `config.json`：
-
-- `course_url`：填写登录后课程视频页的完整地址。模板仅含站点通用地址。
-- `ai.base_url`：AI 接口的 HTTPS 基础地址，程序会追加 `/chat/completions`，也支持填写完整接口地址。
-- `ai.model`：服务商提供的模型名称。
-- `ai.api_key`：自己的 API Key。
-- `ai.min_confidence`：最低置信度，默认 `0.85`。
-- `ai.timeout_seconds`：单次 API 请求超时，默认 45 秒。
-- `poll_seconds`：页面轮询间隔，默认 2 秒。
-- `browser_channel`：`auto` 或 `chrome` 按 Chrome→Edge 回退，也可固定为 `msedge` 或 `chromium`。
-
-环境变量 `ZHS_AI_API_KEY`、`ZHS_AI_BASE_URL`、`ZHS_AI_MODEL` 可以覆盖配置文件中的对应字段。不要把密钥写入源码或提交到 Git。
+检查本地配置：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 study_assistant.py --check-config
 ```
 
-此命令只检查本地配置，不调用远程接口。
+此命令不请求 AI。退出码 `0` 表示格式正确且 AI 必填字段已填写；退出码 `2` 表示配置无效或 AI 字段未填齐。填写成功不代表接口已经联网验证。
 
-## 运行
+### 3. 启动网页控制台
 
-双击 `start.cmd`，或执行：
-
-```powershell
-.\.venv\Scripts\python.exe -X utf8 study_assistant.py
-```
-
-1. 在脚本打开的 Chrome 或 Edge 中登录并进入具体课程视频页。
-2. 检测到课程后自动开始监控；若浏览器阻止首次播放，手动点击播放。
-3. 遇到练习题时读取完整题干和全部选项，再匹配可选本地题库或请求 AI。
-4. 已加载的图片即使位于弹窗滚动区域下方，也直接读取原图；未加载图片自动滚动并等待加载。点击底部选项时自动滚动。
-5. 显示身份验证、未知弹窗或持续识别失败时，按终端提示手动处理。按 `Ctrl+C` 停止。
-
-更新代码后需停止旧程序、关闭它打开的浏览器，再重新运行。
-
-## 网页控制台
-
-也可以双击 `web_console.cmd`，或执行：
+双击 `web_console.cmd`，或执行：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 web_console.py
 ```
 
-控制台只监听本机 `127.0.0.1`，提供启动、停止、重启、暂停/恢复视频、实时日志、配置校验和诊断清理。API Key 在页面和接口返回中会被掩码；发送给助手的补充输入只通过本机进程管道传递。
+浏览器会打开 [本机控制台](http://127.0.0.1:8765/)。点击“启动助手”，在助手打开的浏览器中登录并进入课程视频页。课程加载后自动开始，无需发送回车；首次播放被浏览器阻止时，手动点击播放。
 
-答题识别、图片懒加载和切课恢复期间不需要点击“发送回车”。图片与切课临时故障最多自动恢复 45 秒，空弹窗等待 15 秒；同一结束视频的下一节按钮最多尝试 3 次。持续失败仍会保留诊断并等待人工处理。
+也可以双击 `start.cmd` 直接运行助手，或使用命令：
 
-## 图片与公式
+```powershell
+.\.venv\Scripts\python.exe -X utf8 study_assistant.py
+```
 
-AI 配置完整时，将题目原图发送给配置的视觉接口转写，保留公式上下标、分段条件和区间，再调用解题接口。每张未缓存的图片会增加一次 API 请求；首次识别可能需要数秒至数十秒，后续核对使用内存缓存。
+`start.cmd` 会准备虚拟环境、安装缺少的依赖，并在配置文件不存在时复制模板。`web_console.cmd` 使用已有环境；首次使用请先完成上面的安装步骤。
 
-未配置 AI 时，图片读取使用本地 RapidOCR，但普通 OCR 不保证复杂公式的识别效果。视觉模型也可能误读文字或图形，置信度不等于正确率；不完整结果会暂停。
+## 控制台操作
 
-本项目不修改视频播放速率、进度或平台学习记录，也不处理验证码。填空题、复杂图表及站点结构变化可能需要进一步适配。下一节按钮持续不可用时会暂停，不能据此判断整门课已完成。
+| 操作 | 作用 |
+| --- | --- |
+| 启动助手 | 打开浏览器，恢复仍有效的登录会话并等待课程加载 |
+| 停止助手 | 请求退出；超时后结束助手及其浏览器进程 |
+| 重启助手 | 重新加载代码和配置 |
+| 暂停视频 / 开始视频 | 暂停或恢复播放；暂停期间仍会处理弹题 |
+| 发送回车（继续） | 人工处理完浏览器提示后，让等待中的助手继续检查 |
+| 发送输入 / 发送 q | 向等待输入的助手发送内容，或请求退出 |
+| 保存配置 | 校验后保存，并生成 `config.json.bak` |
+| 检查并按策略清理 | 预览诊断清理方案，确认后删除旧诊断文件 |
 
-## 本地题库
+代码和配置在助手启动时加载，修改后点击“重启助手”才会生效。正常读题、图片加载和切课重试期间，无需反复点击“发送回车”。
 
-可将 `question_bank.example.json` 复制为 `question_bank.json`，按完整题干和选项文字添加已确认答案：
+控制台只监听本机 `127.0.0.1`。密钥字段不会回传完整 API Key，页面显示掩码；输入框留空表示保留原密钥。诊断文件仅在确认清理后删除，始终保留最新一份。
+
+按 `Ctrl+C` 退出控制台时，它也会停止自己启动的助手。直接运行助手时，按 `Ctrl+C` 停止。
+
+## 自动恢复与人工处理
+
+| 场景 | 处理方式 |
+| --- | --- |
+| 图片仍在加载 | 单次加载最多等待 5 秒；首次失败后进入 45 秒自动重试窗口 |
+| 可见弹窗暂时没有题目内容 | 等待 15 秒，继续检查内容 |
+| 切课时控件超时或视频暂时缺失 | 在同一 45 秒恢复窗口内继续轮询 |
+| 点击下一节后仍是原视频 | 等待 20 秒后重试，同一结束视频最多成功点击 3 次 |
+| 已点击下一节，但按钮暂时不可用 | 保留当前切课状态，最多等待 45 秒恢复 |
+| 播放进度持续不变 | 超过 60 秒后提示人工检查；答题、识别和恢复耗时不计入播放卡顿 |
+| 图片无法识别、答案置信度不足或题目发生变化 | 暂停自动提交，等待人工处理 |
+
+超时在轮询时检查，单次网页操作耗时可能让实际等待略长。持续失败会记录原因并保存诊断，之后才进入等待输入。
+
+需要人工处理时，先查看日志，在课程浏览器中完成提示或处理当前题目，再点击“发送回车（继续）”。如果修改了配置，应点击“重启助手”。身份验证需自行完成。
+
+视频结束且未找到可用的下一节入口时，助手可能停止；请核对课程目录与学习进度，不能据此认定整门课已完成。
+
+## 配置说明
+
+| 字段 | 默认值 / 要求 |
+| --- | --- |
+| `course_url` | HTTPS 的智慧树课程视频页地址 |
+| `browser_channel` | `auto`；优先 Chrome，不可用时尝试 Edge |
+| `poll_seconds` | `2` 秒，允许 `0.5–30` 秒 |
+| `ai.base_url` | 自己的 HTTPS AI 接口地址 |
+| `ai.model` | 服务商提供的模型名称 |
+| `ai.api_key` | 自己的 API Key |
+| `ai.min_confidence` | `0.85`，允许 `0–1`；图片视觉转写至少要求 `0.85` |
+| `ai.timeout_seconds` | `45` 秒，允许 `1–120` 秒 |
+| `diagnostics.keep_days` | `7` 天 |
+| `diagnostics.keep_count` | `50` 份 |
+| `diagnostics.keep_mb` | `200` MB |
+| `selectors` | 弹窗、题干、选项等 CSS 选择器；通常保持模板值 |
+
+`ZHS_AI_API_KEY`、`ZHS_AI_BASE_URL`、`ZHS_AI_MODEL` 环境变量会覆盖文件中的 AI 字段。若控制台保存了配置但运行时仍使用旧接口，请检查启动控制台的环境变量。
+
+`browser_channel` 也支持 `chrome`、`msedge` 和 `chromium`。`chrome` 同样允许回退到 Edge；`msedge` 固定使用 Edge。使用 `chromium` 时需自行安装：
+
+```powershell
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+## 图片、公式与题库
+
+AI 配置完整时，程序将题目原图发给配置的视觉接口转写，再用完整题干和选项解题。转写会保留公式上下标、分段条件和区间；识别结果缓存在内存中，后续核对使用缓存。
+
+每张首次识别的图片会增加一次 API 请求，完整题目还会调用一次解题接口。读图可能需要数秒至数十秒，可在日志中查看进展。置信度用于过滤答案，不代表正确率保证。
+
+未配置 AI 时，图片读取使用本地 RapidOCR，已确认题目可匹配本地题库；未知题目会暂停。复杂公式、图表、填空题及页面结构变化可能需要人工处理或进一步适配。
+
+本地题库可从模板创建：
+
+```powershell
+if (!(Test-Path question_bank.json)) {
+    Copy-Item question_bank.example.json question_bank.json
+}
+```
+
+按完整题干和选项文字填写已确认答案，多选题可填写多个答案：
 
 ```json
 [
@@ -91,44 +162,68 @@ AI 配置完整时，将题目原图发送给配置的视觉接口转写，保�
 ]
 ```
 
-使用选项文字匹配，避免选项乱序引起错答。个人题库已被 Git 忽略。
+程序按选项文字匹配，避免选项乱序造成错答。更新项目时保留自己的 `question_bank.json`。
 
 ## 隐私与诊断
 
-以下内容只保存在本机，已加入 `.gitignore`：
+发布仓库使用通用配置和合成测试图片，个人运行数据由 `.gitignore` 排除：
 
-- `config.json`：个人接口和课程配置。
-- `browser_profile/`、`.session/`：浏览器资料、Cookie 和 Storage。
-- `logs/`、`diagnostics/`：运行日志、页面截图和控件诊断。
-- `question_bank.json`：个人题库。
+| 本机文件 / 目录 | 内容 |
+| --- | --- |
+| `config.json`、`config.json.bak` | 课程地址、接口配置和密钥 |
+| `browser_profile/`、`.session/` | 浏览器资料、Cookie 和 Storage |
+| `logs/` | 日志、运行状态和控制命令 |
+| `diagnostics/` | 页面截图与控件诊断 |
+| `question_bank.json` | 自己维护的题库 |
 
-发布版本不包含个人账号、密钥、课程标识、浏览器登录数据、运行记录或实际页面截图。测试图片由程序生成。
+调用 AI 时会发送题目文字、选项或题目原图；读取题图使用原始像素。发布代码不包含个人密钥、课程标识、登录数据或实际页面截图。
 
-诊断截图可能包含页面显示的个人信息，分享前请自行检查。仅诊断模式：
+诊断截图和日志可能包含页面显示的个人信息，分享前请检查。仅采集诊断、不播放或答题：
 
 ```powershell
 .\start.cmd --inspect
 ```
 
-选择器可在 `config.json` 的 `selectors` 中覆盖。无法读取选中状态的自定义控件会暂停，不能只靠点击位置判断答题成功。
+诊断模式需要让目标弹窗保持显示，再按终端提示回车保存。清理前可查看计划：
 
-## 源码与测试
+```powershell
+.\.venv\Scripts\python.exe -X utf8 cleanup.py --dry-run
+```
+
+## 常见问题
+
+| 问题 | 处理方法 |
+| --- | --- |
+| 提示缺少 `.venv` | 先按“快速开始”安装，或运行 `start.cmd` |
+| 找不到 `config.json` | 复制 `config.example.json`，填写配置后再启动 |
+| 控制台端口被占用 | 关闭已有控制台，或使用 `web_console.py --port 8766` |
+| 一直等待课程 | 在助手打开的浏览器中完成登录，并进入具体视频页 |
+| AI 返回 HTTP 错误或超时 | 根据日志检查接口地址、模型、密钥、额度和网络 |
+| 公式题一直识别失败 | 确认接口支持 `image_url`，查看图片加载或识别错误 |
+| 修改配置没有生效 | 点击“重启助手”，并检查环境变量是否覆盖配置 |
+| 仍需回车才能继续 | 确认旧助手已重启；若是持续失败或人工提示，按日志处理 |
+
+## 源码与验证
 
 | 文件 | 用途 |
 | --- | --- |
-| `study_assistant.py` | 配置、课程监控和运行入口 |
-| `browser_adapter.py` | 页面读取、选项操作和续播 |
-| `image_text.py` | 原图读取、懒加载与识别缓存 |
-| `answer_engine.py` | 题库匹配、视觉转写和 AI 答案校验 |
-| `session_store.py` | 本机会话保存和恢复 |
-| `run_control.py` | 助手与网页控制台之间的本机命令和状态 |
-| `web_console.py` / `web_console.cmd` | 本机网页控制台 |
-| `cleanup.py` | 诊断目录按策略清理 |
-| `tests/` | 模拟页面、模拟 API 和合成图片回归测试 |
+| `study_assistant.py` | 配置、监控循环和助手入口 |
+| `browser_adapter.py` | 页面读取、选项操作、反馈与切课 |
+| `image_text.py` | 原图读取、懒加载和识别缓存 |
+| `answer_engine.py` | 题库匹配、视觉转写和答案校验 |
+| `session_store.py` | 本机会话保存与恢复 |
+| `run_control.py` | 本机控制命令和运行状态 |
+| `web_console.py`、`web/` | 网页控制台后端与界面 |
+| `cleanup.py` | 诊断目录清理 |
+| `tests/` | 本地页面、模拟 API 和合成图片回归测试 |
+
+运行测试与语法检查：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m py_compile answer_engine.py browser_adapter.py image_text.py study_assistant.py session_store.py
+.\.venv\Scripts\python.exe -m py_compile answer_engine.py browser_adapter.py cleanup.py image_text.py run_control.py session_store.py study_assistant.py web_console.py
 ```
 
-测试使用本机 Chrome，无须登录真实课程，也不会请求付费 AI。平台页面和第三方模型可能变化，本地测试通过不代表所有线上课程都已验证。
+本次发布验证：216 项测试，215 通过、1 项因本机无法创建符号链接跳过。测试使用本机 Chrome，不需要登录真实课程，不请求付费 AI；新版真实课程行为仍需使用时验证。
+
+助手按视频自然播放结束切课，不修改播放速率、播放进度或平台学习记录，也不处理验证码。
