@@ -20,5 +20,10 @@
     "player": "#vjs_container",
     "next": "#nextBtn",
     "lesson": "#lessonOrder"
+  },
+  "diagnostics": {
+    "keep_days": 7,
+    "keep_count": 50,
+    "keep_mb": 200
   }
 }

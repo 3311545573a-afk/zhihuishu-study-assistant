@@ -1,4 +1,4 @@
-"""以合成图片题验证识别、提交和关闭流程。"""
+"""以用户截图中的图片题复现空选项，并验证原有提交/关闭流程。"""
 import base64
 from pathlib import Path
 import unittest
@@ -8,6 +8,7 @@ import threading
 
 from playwright.sync_api import Locator, sync_playwright
 from browser_adapter import CoursePage
+import image_text
 
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'image_quiz'
@@ -24,7 +25,7 @@ def quiz_html():
         'document.querySelector(\'.answer\').textContent=\'正确答案：A\'">'
         f'<span class="topic-option-item">{letter.upper()}.</span>'
         f'<div class="item-topic">{image_tag(letter)}</div></li>' for letter in 'abc')
-    return ('<div id="lessonOrder">演示章节</div>'
+    return ('<div id="lessonOrder">1.1.2、函数的基本性质</div>'
             '<div id="playTopic-dialog"><div class="el-dialog" role="dialog">'
             f'<p class="topic-title">【单选题】{image_tag("question")}</p>' + options +
             '<li class="topic-item"><span class="topic-option-item">D.</span>'
@@ -51,7 +52,7 @@ class ImageQuizTests(unittest.TestCase):
         self.page.set_content(quiz_html())
         self.adapter = CoursePage(self.page, {})
 
-    def test_generated_image_question_selects_and_closes(self):
+    def test_screenshot_image_question_selects_and_closes(self):
         quiz = self.adapter.read_quiz()
         self.assertIsNotNone(quiz, '图片题必须能被识别，不能丢弃空 innerText 选项')
         self.assertIn('关于函数的描述', quiz.question.text)
@@ -146,6 +147,31 @@ class ImageQuizTests(unittest.TestCase):
         except ValueError as exc:
             self.fail(f'必须先滚动触发懒加载再读取：{exc}')
         self.assertEqual(text, '周期函数一定有最小正周期')
+
+    def test_zero_size_displayed_image_waits_for_late_source(self):
+        source = image_tag('a').split('src="', 1)[1].split('"', 1)[0]
+        self.page.set_content('<div id="text">选项<img style="width:0;height:0"></div>')
+        self.page.evaluate("(src) => setTimeout(() => document.querySelector('img').src = src, 100)", source)
+        self.assertIn('周期函数一定有最小正周期',
+                      self.adapter.image_text.read(self.page.locator('#text')))
+
+    def test_hidden_and_excluded_images_do_not_block_reading(self):
+        self.page.set_content('<div id="text">有效文字'
+                              '<div style="display:none"><img src="broken"></div>'
+                              '<div class="skip"><img src="broken"></div></div>')
+        self.assertEqual(self.adapter.image_text.read(self.page.locator('#text'), '.skip'), '有效文字')
+
+    def test_unavailable_image_uses_recoverable_exception(self):
+        self.page.set_content('<div id="text"><img style="width:0;height:0"></div>')
+        with self.assertRaises(ValueError) as caught:
+            self.adapter.image_text.read(self.page.locator('#text'))
+        self.assertIsInstance(caught.exception, image_text.ImageNotReadyError)
+
+    def test_invalid_image_encoding_is_not_retried(self):
+        self.page.set_content('<div id="text"><img src="data:image/png;base64,***"></div>')
+        with self.assertRaises(ValueError) as caught:
+            self.adapter.image_text.read(self.page.locator('#text'))
+        self.assertNotIsInstance(caught.exception, image_text.ImageNotReadyError)
 
     def test_configured_vision_reads_formula_and_caches_result(self):
         import inspect

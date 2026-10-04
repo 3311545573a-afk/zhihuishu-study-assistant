@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网课助手控制台</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>网课助手控制台</h1>
+  <div class="status">
+    <span id="status-dot" class="dot idle"></span>
+    <strong id="status-label">正在连接…</strong>
+    <span id="status-detail" class="muted"></span>
+    <span id="status-warning" class="warn" hidden></span>
+    <span class="meta" id="status-meta"></span>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>运行控制</h2>
+    <div class="row">
+      <button id="start" class="primary">启动助手</button>
+      <button id="stop" class="danger">停止助手</button>
+      <button id="restart">重启助手</button>
+    </div>
+    <div class="row">
+      <span class="cap">视频</span>
+      <span id="video-info" class="meta">无数据</span>
+      <span id="video-pending" class="warn" hidden>等待助手响应…</span>
+      <button id="video-pause" disabled>暂停视频</button>
+      <span class="hint">倍速请在课程原生播放器菜单手动选择 1x / 1.25x / 1.5x</span>
+    </div>
+    <p class="hint">
+      助手会在本机打开 Chrome 或 Edge 并进入配置里的课程地址。停止时先请求优雅退出（会保存登录状态）；
+      5 秒内没有退出就强制结束整个进程树，包括它打开的浏览器窗口。
+      助手只在启动时读配置：在下面改了配置或换了密钥，<strong>点“重启助手”才会生效</strong>。
+    </p>
+    <div class="row">
+      <label class="cap" for="stdin">补充输入</label>
+      <input id="stdin" type="text" autocomplete="off"
+             placeholder="助手停在“等待你在浏览器处理”时，在这里补充输入">
+      <button id="send-text">发送输入</button>
+      <button id="send-enter">发送回车（继续）</button>
+      <button id="send-quit">发送 q（退出）</button>
+    </div>
+    <p class="hint" id="action-message"></p>
+  </section>
+
+  <section class="card" id="diagnostics-card">
+    <h2>诊断文件 <span class="muted" id="diag-summary">读取中…</span></h2>
+    <div class="row">
+      <button id="diag-check">检查并按策略清理</button>
+      <span class="muted" id="diag-policy"></span>
+    </div>
+    <p class="hint">
+      助手每次暂停都会在 <code>diagnostics/</code> 里留一份现场截图和控件结构，方便排查问题。
+      <strong>这里不会自动删任何东西</strong>，只有你点按钮并确认后才清。
+    </p>
+    <div class="row confirm" id="diag-confirm" hidden>
+      <span id="diag-confirm-text"></span>
+      <button id="diag-confirm-yes" class="danger">确认清理</button>
+      <button id="diag-confirm-no">取消</button>
+    </div>
+    <p class="hint" id="diag-message"></p>
+  </section>
+
+  <section class="card">
+    <h2>实时日志 <span class="muted" id="log-state">连接中…</span></h2>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="autoscroll" checked> 自动滚动</label>
+      <input id="filter" type="text" autocomplete="off" placeholder="只看包含这些字的行">
+      <button id="clear-view">清空视图</button>
+      <span class="muted" id="log-count"></span>
+    </div>
+    <div id="log" class="log" aria-live="polite"></div>
+  </section>
+
+  <section class="card">
+    <h2><button id="config-toggle" class="link" type="button">配置 config.json ▾</button></h2>
+    <form id="config-form" hidden>
+      <div class="grid">
+        <label>课程地址
+          <input id="course_url" type="url" spellcheck="false">
+        </label>
+        <label>浏览器通道
+          <select id="browser_channel">
+            <option value="auto">auto（先 Chrome，再 Edge）</option>
+            <option value="chrome">chrome</option>
+            <option value="msedge">msedge</option>
+            <option value="chromium">chromium（需自行安装）</option>
+          </select>
+        </label>
+        <label>轮询间隔（秒，0.5–30）
+          <input id="poll_seconds" type="number" step="0.5" min="0.5" max="30">
+        </label>
+        <label>AI 接口地址
+          <input id="ai_base_url" type="text" spellcheck="false">
+        </label>
+        <label>AI 模型
+          <input id="ai_model" type="text" spellcheck="false">
+        </label>
+        <label>AI 密钥
+          <input id="ai_api_key" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="留空表示不修改">
+        </label>
+        <label>最低置信度（0–1）
+          <input id="ai_min_confidence" type="number" step="0.01" min="0" max="1">
+        </label>
+        <label>请求超时（秒，1–120）
+          <input id="ai_timeout_seconds" type="number" step="1" min="1" max="120">
+        </label>
+      </div>
+
+      <details class="selectors">
+        <summary>网页选择器（不确定就别改）</summary>
+        <div class="grid">
+          <label>dialog<input id="sel_dialog" type="text" spellcheck="false"></label>
+          <label>question<input id="sel_question" type="text" spellcheck="false"></label>
+          <label>option<input id="sel_option" type="text" spellcheck="false"></label>
+          <label>selected<input id="sel_selected" type="text" spellcheck="false"></label>
+          <label>submit<input id="sel_submit" type="text" spellcheck="false"></label>
+          <label>continue<input id="sel_continue" type="text" spellcheck="false"></label>
+          <label>video<input id="sel_video" type="text" spellcheck="false"></label>
+          <label>player<input id="sel_player" type="text" spellcheck="false"></label>
+          <label>next<input id="sel_next" type="text" spellcheck="false"></label>
+          <label>lesson<input id="sel_lesson" type="text" spellcheck="false"></label>
+        </div>
+      </details>
+
+      <details class="selectors">
+        <summary>诊断清理保留策略（diagnostics/ 里的现场文件）</summary>
+        <div class="grid">
+          <label>保留天数<input id="diag_keep_days" type="number" step="1" min="0.01" max="3650"></label>
+          <label>最多保留个数<input id="diag_keep_count" type="number" step="1" min="1" max="100000"></label>
+          <label>总体积上限（MB）<input id="diag_keep_mb" type="number" step="10" min="1" max="1000000"></label>
+        </div>
+        <p class="hint">永远保留最新一份现场；超出任一上限就从最旧的开始清。</p>
+      </details>
+
+      <div class="row">
+        <button id="save-config" class="primary" type="submit">保存配置</button>
+        <span class="muted">保存前会用助手自身的校验规则检查一遍，不通过就不写文件；会先生成 config.json.bak。</span>
+      </div>
+      <p class="hint" id="config-message"></p>
+    </form>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

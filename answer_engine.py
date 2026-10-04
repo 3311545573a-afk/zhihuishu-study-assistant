@@ -131,6 +131,45 @@ def transcribe_image(data: bytes, config: dict) -> str:
     return text.strip()
 
 
+def _truncate(text: str, limit: int = 300) -> str:
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _error_detail(body: str) -> str:
+    """从接口返回体里取出人能看懂的一句；解析不了就原样截断。"""
+    body = (body or "").strip()
+    if not body:
+        return ""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return _truncate(body)
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            text = error.get("message") or error.get("type") or ""
+        elif isinstance(error, str):
+            text = error
+        else:
+            text = data.get("message", "")
+        if text:
+            return _truncate(text)
+    return _truncate(body)
+
+
+def api_error_message(status: int, body: str) -> str:
+    """附上接口返回的原始说明，便于区分是密钥、额度、模型还是地址的问题。
+
+    只取接口自己的错误文本，不包含请求头，因此不会带出 API Key。
+    """
+    message = f"AI 接口 HTTP {status}；请检查模型、密钥、额度和接口地址"
+    detail = _error_detail(body)
+    if detail:
+        message += f"。接口返回：{detail}"
+    return message
+
+
 def _chat(messages: list, config: dict) -> str:
     base = config.get("base_url", "").strip().rstrip("/")
     key = config.get("api_key", "").strip()
@@ -152,8 +191,15 @@ def _chat(messages: list, config: dict) -> str:
             raise ValueError("模型返回内容不是文本")
     except urllib.error.HTTPError as exc:
         status = exc.code
-        exc.close()
-        raise ValueError(f"AI 接口 HTTP {status}；请检查模型、密钥、额度和接口地址") from None
+        try:
+            body = exc.read(4000).decode("utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError, TypeError):
+            body = ""
+        try:
+            exc.close()
+        except (OSError, AttributeError):
+            pass
+        raise ValueError(api_error_message(status, body)) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise ValueError("AI 接口连接失败或超时；已停止本题自动提交") from None
     except (KeyError, IndexError, TypeError, json.JSONDecodeError):

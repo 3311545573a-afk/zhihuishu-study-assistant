@@ -14,6 +14,10 @@ LOG = logging.getLogger('study')
 MAX_IMAGE_BYTES = 10_000_000
 
 
+class ImageNotReadyError(ValueError):
+    """题目图片暂时没有可读取的原图。"""
+
+
 @lru_cache(maxsize=1)
 def _ocr_engine():
     try:
@@ -60,11 +64,28 @@ class ImageTextReader:
         """按 DOM 顺序拼接文字和图片文字，保留混合题干与选项的对应关系。"""
         # 已加载的离屏图片直接读取原图；仅未加载图片需要滚动触发网站懒加载。
         for image in locator.locator('img').all():
-            if not image.is_visible():
+            eligible = image.evaluate("""(el, exclude) => {
+                for (let node = el; node; node = node.parentElement) {
+                    if (exclude && node.matches(exclude)) return false;
+                    const style = getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        node.matches('script,style,input,svg')) return false;
+                }
+                return true;
+            }""", exclude)
+            if not eligible:
                 continue
             loaded = image.evaluate('el => el.complete && el.naturalWidth > 0')
             if loaded:
                 continue
+            source = image.evaluate('el => el.currentSrc || el.src')
+            if source.startswith('data:image/'):
+                try:
+                    header, payload = source.split(',', 1)
+                    if ';base64' in header:
+                        base64.b64decode(payload, validate=True)
+                except (ValueError, TypeError) as exc:
+                    raise ValueError('题目图片编码无效') from exc
             try:
                 image.scroll_into_view_if_needed(timeout=3000)
                 loaded = image.evaluate("""el => new Promise(resolve => {
@@ -78,7 +99,7 @@ class ImageTextReader:
             except BrowserError:
                 loaded = False
             if not loaded:
-                raise ValueError('题目图片滚动加载失败或已损坏，请检查网络后继续')
+                raise ImageNotReadyError('题目图片滚动加载失败或暂不可用，请检查网络后继续')
         parts = locator.evaluate("""(root, exclude) => {
             const parts = [];
             const walk = node => {
@@ -113,7 +134,7 @@ class ImageTextReader:
 
     def _image_text(self, locator: Locator, part: dict) -> str:
         if not part['loaded'] or not part['src']:
-            raise ValueError('题目图片尚未加载或已损坏，请等待图片加载后继续')
+            raise ImageNotReadyError('题目图片尚未加载或暂不可用，请等待图片加载后继续')
         source = part['src']
         # 同源图片使用实际像素作为缓存键，跨域图片使用平台资源地址。
         key = hashlib.sha256((part['data'] or source).encode()).hexdigest()
@@ -134,12 +155,12 @@ class ImageTextReader:
                 response = locator.page.context.request.get(source, timeout=15000)
                 try:
                     if not response.ok:
-                        raise ValueError('题目图片下载失败，请检查网络后继续')
+                        raise ImageNotReadyError('题目图片下载失败，请检查网络后继续')
                     data = response.body()
                 finally:
                     response.dispose()
             except BrowserError:
-                raise ValueError('题目图片下载失败或超时，请检查网络后继续') from None
+                raise ImageNotReadyError('题目图片下载失败或超时，请检查网络后继续') from None
         if not data or len(data) > MAX_IMAGE_BYTES:
             raise ValueError('题目图片为空或超过大小限制')
         if all(self.ai_config.get(k) for k in ('base_url', 'model', 'api_key')):

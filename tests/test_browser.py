@@ -4,6 +4,7 @@ try:
     from browser_adapter import CoursePage
 except ImportError:
     CoursePage = None
+from tests.test_flow import silent_wav
 
 HTML = '''<div id="lessonOrder">1.1 数据库</div><div id="vjs_container"><video></video></div>
 <div role="dialog"><h3 class="question">SQL 查询使用哪个关键字？（单选题）</h3>
@@ -11,6 +12,27 @@ HTML = '''<div id="lessonOrder">1.1 数据库</div><div id="vjs_container"><vide
 <label><input type="radio" name="q">INSERT</label>
 <button onclick="window.submits=(window.submits||0)+1;this.disabled=true;document.querySelector('#continue').hidden=false">提交</button>
 <button id="continue" hidden onclick="this.parentElement.remove()">继续学习</button></div>'''
+
+NATIVE_RATE_HTML = '''<div id="lessonOrder">1.1 数据库</div>
+<div id="container"><video></video><div class="speedBox"><span>X 1.0</span>
+<div class="speedTab" rate="1">X 1.0</div>
+<div class="speedTab" rate="1.25">X 1.25</div>
+<div class="speedTab" rate="1.5">X 1.5</div></div></div>
+<script>
+window.course = {playRate: 1, options: {rate: 1}, clicks: 0};
+const video = document.querySelector('video');
+for (const tab of document.querySelectorAll('.speedTab')) {
+  tab.addEventListener('click', () => {
+    const rate = Number(tab.getAttribute('rate'));
+    video.playbackRate = rate;
+    course.options.rate = rate;
+    course.playRate = rate;
+    course.clicks++;
+    document.querySelector('.speedBox > span').textContent = tab.textContent;
+  });
+}
+video.addEventListener('emptied', () => { video.playbackRate = course.playRate; });
+</script>'''
 
 
 class BrowserTests(unittest.TestCase):
@@ -140,6 +162,73 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('video').evaluate("v=>Object.defineProperty(v,'ended',{value:true})")
         self.assertTrue(self.adapter.next_lesson())
         self.assertTrue(self.page.evaluate('window.nextClicked'))
+
+    def test_video_state_rate_pause_and_set_rate(self):
+        """倍速要能读出来、能设进去；暂停要真的让视频停下，恢复要能再播。"""
+        self.page.set_content(
+            f'<div id="vjs_container"><video muted src="{silent_wav(5)}"></video></div>')
+        adapter = CoursePage(self.page, {})
+        state = adapter.video_state()
+        self.assertIsNotNone(state)
+        self.assertEqual(state["rate"], 1.0)
+        self.assertTrue(adapter.set_rate(1.5))
+        self.assertEqual(adapter.video_state()["rate"], 1.5)
+        # 浏览器对越界倍速会抛页面异常（有的实现是夹取），适配器必须兜住并返回 False
+        self.assertFalse(adapter.set_rate(20.0), "越界倍速不能让异常穿出去")
+        self.assertNotEqual(adapter.video_state()["rate"], 20.0, "越界倍速不能真的生效")
+
+        self.page.evaluate("() => document.querySelector('video').play()")
+        self.page.wait_for_function("() => !document.querySelector('video').paused", timeout=5000)
+        self.assertTrue(adapter.pause_video())
+        self.assertTrue(adapter.video_state()["paused"])
+
+        self.assertTrue(adapter.resume())
+        self.page.wait_for_function("() => !document.querySelector('video').paused", timeout=5000)
+
+    def test_native_rate_updates_course_state_and_survives_source_change(self):
+        self.page.set_content(NATIVE_RATE_HTML)
+        adapter = CoursePage(self.page, {})
+        self.assertTrue(adapter.set_rate(1.5))
+        self.assertEqual(self.page.evaluate("() => ({rate: document.querySelector('video').playbackRate, "
+                                            "app: course.playRate, option: course.options.rate, "
+                                            "label: document.querySelector('.speedBox > span').textContent, "
+                                            "clicks: course.clicks})"),
+                         {"rate": 1.5, "app": 1.5, "option": 1.5, "label": "X 1.5", "clicks": 1})
+        self.page.locator('video').evaluate("(video, src) => { video.src = src; video.load(); }", silent_wav(1))
+        self.page.wait_for_function("() => document.querySelector('video').playbackRate === 1.5")
+
+    def test_native_rate_repairs_state_when_media_already_matches(self):
+        self.page.set_content(NATIVE_RATE_HTML)
+        self.page.locator('video').evaluate("video => { video.playbackRate = 1.5; }")
+        adapter = CoursePage(self.page, {})
+        self.assertTrue(adapter.set_rate(1.5))
+        self.assertEqual(self.page.evaluate("() => [course.playRate, course.options.rate, "
+                                            "document.querySelector('.speedBox > span').textContent, course.clicks]"),
+                         [1.5, 1.5, "X 1.5", 1])
+
+    def test_native_unsupported_rate_does_not_fall_back_to_raw_video(self):
+        self.page.set_content(NATIVE_RATE_HTML)
+        adapter = CoursePage(self.page, {})
+        self.assertFalse(adapter.set_rate(2))
+        self.assertEqual(self.page.evaluate("() => [document.querySelector('video').playbackRate, "
+                                            "course.playRate, course.clicks]"), [1, 1, 0])
+
+    def test_native_rate_control_inside_iframe(self):
+        self.page.set_content('<iframe></iframe>')
+        frame = self.page.frame_locator('iframe')
+        self.page.locator('iframe').evaluate('(iframe, html) => { iframe.srcdoc = html; }', NATIVE_RATE_HTML)
+        frame.locator('.speedTab[rate="1.5"]').wait_for()
+        adapter = CoursePage(self.page, {})
+        self.assertTrue(adapter.set_rate(1.5))
+        self.assertEqual(frame.locator('.speedBox > span').inner_text(), 'X 1.5')
+        self.assertEqual(frame.locator('video').evaluate('video => video.playbackRate'), 1.5)
+
+    def test_video_controls_report_false_without_video(self):
+        self.page.set_content('<div>没有视频</div>')
+        adapter = CoursePage(self.page, {})
+        self.assertIsNone(adapter.video_state())
+        self.assertFalse(adapter.set_rate(1.5))
+        self.assertFalse(adapter.pause_video())
 
 
 if __name__ == '__main__':

@@ -1,0 +1,211 @@
+:root {
+  --bg: #f3f5f8;
+  --card: #ffffff;
+  --ink: #1f2733;
+  --muted: #6b7785;
+  --line: #dde3ea;
+  --blue: #2b6cb0;
+  --green: #2f855a;
+  --orange: #c05621;
+  --orange-ink: #9c4221;
+  --red: #c53030;
+  --teal: #2c7a7b;
+  --gray: #8a94a0;
+}
+
+* { box-sizing: border-box; }
+
+/* display: flex 之类的规则会盖过 hidden 属性，这里让它始终有效。 */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.6 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.topbar h1 { font-size: 17px; margin: 0; }
+
+.status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--gray);
+  flex: none;
+}
+.dot.idle { background: var(--gray); }
+.dot.starting { background: var(--blue); }
+.dot.monitoring { background: var(--green); }
+.dot.answering { background: var(--teal); }
+.dot.waiting { background: var(--orange); }
+.dot.stopped { background: var(--gray); }
+.dot.error { background: var(--red); }
+
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 20px 16px 60px;
+  display: grid;
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+
+.card h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.muted { color: var(--muted); font-weight: normal; font-size: 12px; }
+.meta { color: var(--muted); font-size: 12px; }
+
+.warn {
+  background: #fdf0e3;
+  border: 1px solid #dd6b20;
+  color: var(--orange-ink);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+.hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; min-height: 18px; }
+/* 说明段语义上属于上面的按钮，下面的行要留出更明显的间隔。 */
+.hint + .row { margin-top: 16px; }
+.hint strong { color: #4a5568; }
+.hint code {
+  background: #eef1f5;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+}
+
+.row.confirm {
+  background: #fdf1e3;
+  border: 1px solid #dd6b20;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+/* 确认条里的破坏性操作才用实心红，和旁边描边的「取消」拉开权重。 */
+.row.confirm button.danger { background: var(--red); border-color: var(--red); color: #fff; }
+.row.confirm button.danger:hover:not(:disabled) { background: #9b2c2c; border-color: #9b2c2c; }
+
+button {
+  font: inherit;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: #b9c2cd; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+button.danger { background: #fff; border-color: #e0b4b4; color: var(--red); }
+button.link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+input[type="text"], input[type="url"], input[type="password"], input[type="number"], select {
+  font: inherit;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  min-width: 0;
+}
+
+#stdin { flex: 1 1 320px; }
+/* 视频状态一行里信息最长；min-width:0 让它在 flex 行里能被压缩，超长节名换行而不是把卡片撑破。 */
+#video-info { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+.row .cap { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+#filter { flex: 0 1 220px; }
+label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+
+.log {
+  height: 340px;
+  overflow: auto;
+  background: #10161d;
+  color: #d7e0ea;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: 12.5px/1.65 Consolas, "Cascadia Mono", Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log .line { display: block; }
+.log .time { color: #6f8598; }
+.log .src { color: #7fa6c9; }
+.log .line.src-app .text { color: #ffe0a3; }
+.log .line.src-console .text { color: #9ad3a9; }
+.log .line.error .text { color: #ff9b9b; }
+.log .empty { color: #6f8598; }
+/* 日志本身为空时收高，别让空框把「配置」卡片挤出首屏；筛选无结果不算空。 */
+.log.is-empty { height: 120px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.grid label, .selectors label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.selectors {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.selectors summary { cursor: pointer; font-size: 13px; color: var(--ink); }
+
+@media (max-width: 620px) {
+  .topbar { position: static; }
+  .log { height: 260px; }
+}

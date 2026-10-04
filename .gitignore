@@ -9,7 +9,9 @@ __pycache__/
 .env.*
 !.env.example
 config.json
+config.json.bak
 config.local*.json
+*.bak
 question_bank.json
 browser_profile/
 .session/
@@ -19,5 +21,9 @@ diagnostics/
 task_plan.md
 findings.md
 progress.md
+.superpowers/
+.agents/
+.codex/
+github-release/
 *.log
 *.zip

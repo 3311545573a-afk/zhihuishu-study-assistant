@@ -1,9 +1,13 @@
+import io
+import json
 import unittest
+import urllib.error
+from unittest.mock import patch
 
 try:
-    from answer_engine import Question, parse_answer, match_bank
+    from answer_engine import Question, _chat, api_error_message, match_bank, parse_answer
 except ImportError:
-    Question = parse_answer = match_bank = None
+    Question = parse_answer = match_bank = api_error_message = _chat = None
 
 
 class AnswerTests(unittest.TestCase):
@@ -46,6 +50,53 @@ class AnswerTests(unittest.TestCase):
         for content in ('答案是 A', '[]', '{}', '{"answers": [1]'):
             with self.subTest(content=content), self.assertRaises(ValueError):
                 parse_answer(content, self.q, 0.8)
+
+
+class ApiErrorTests(unittest.TestCase):
+    """401 之类的报错要带上接口自己的说明，否则分不清是密钥、额度还是地址的问题。"""
+
+    CONFIG = {"base_url": "https://api.deepseek.com", "api_key": "sk-unittest-secret", "model": "deepseek-flash"}
+
+    def setUp(self):
+        self.assertIsNotNone(api_error_message, "尚未实现接口错误信息")
+
+    def chat_with_error(self, error):
+        with patch("urllib.request.build_opener") as build:
+            build.return_value.open.side_effect = error
+            with self.assertRaises(ValueError) as caught:
+                _chat([{"role": "user", "content": "hi"}], self.CONFIG)
+        return str(caught.exception)
+
+    def test_http_error_carries_api_message(self):
+        body = io.BytesIO(json.dumps(
+            {"error": {"message": "Authentication Fails, Your api key is invalid"}}).encode("utf-8"))
+        error = urllib.error.HTTPError(
+            "https://api.deepseek.com/chat/completions", 401, "Unauthorized", {}, body)
+        message = self.chat_with_error(error)
+        self.assertIn("HTTP 401", message)
+        self.assertIn("Authentication Fails", message)
+        self.assertNotIn(self.CONFIG["api_key"], message)
+
+    def test_http_error_without_body_stays_short(self):
+        error = urllib.error.HTTPError(
+            "https://api.deepseek.com/chat/completions", 402, "Payment Required", {}, None)
+        self.assertEqual(self.chat_with_error(error),
+                         "AI 接口 HTTP 402；请检查模型、密钥、额度和接口地址")
+
+    def test_long_html_body_is_truncated(self):
+        body = io.BytesIO(b"<html>" + b"x" * 900 + b"</html>")
+        error = urllib.error.HTTPError("https://api.deepseek.com/chat/completions", 502,
+                                       "Bad Gateway", {}, body)
+        message = self.chat_with_error(error)
+        self.assertIn("HTTP 502", message)
+        self.assertLess(len(message), 420)
+
+    def test_plain_text_body_is_included(self):
+        self.assertIn("quota exceeded", api_error_message(429, "quota exceeded"))
+
+    def test_error_type_field_is_used_when_message_missing(self):
+        self.assertIn("insufficient_quota",
+                      api_error_message(429, json.dumps({"error": {"type": "insufficient_quota"}})))
 
 
 if __name__ == '__main__':

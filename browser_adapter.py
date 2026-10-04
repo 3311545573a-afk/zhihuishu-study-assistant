@@ -1,4 +1,4 @@
-"""网页适配层。播放器 ID 适配课程页面；弹题 CSS 可在配置中覆盖。"""
+"""网页适配层。播放器 ID 来自用户页面；弹题 CSS 可在配置中覆盖。"""
 from dataclasses import dataclass
 import hashlib
 import re
@@ -218,9 +218,42 @@ class CoursePage:
             return None
         state = video.evaluate("""el => ({time: el.currentTime, duration: Number.isFinite(el.duration) ? el.duration : 0,
             paused: el.paused, ended: el.ended, ready: el.readyState, src: el.currentSrc,
-            error: el.error ? el.error.code : null})""")
+            rate: el.playbackRate, error: el.error ? el.error.code : null})""")
         state["key"] = hashlib.sha256((self.lesson() + state.pop("src")).encode()).hexdigest()
         return state
+
+    def set_rate(self, rate: float) -> bool:
+        """优先通过课程播放器的倍速菜单设置；普通视频使用媒体元素回退。
+
+        浏览器对倍速有可设区间（Chrome 约 0.0625–16），越界时 setter 会抛
+        DOMException；那属于"这一次没设上"，返回 False 就行。页面级的异常
+        （窗口被关、执行上下文销毁）**不在这里吞**，照旧交给主循环按浏览器错误处理。
+        """
+        video = self.video()
+        if video is None:
+            return False
+        return bool(video.evaluate(
+            """(el, rate) => {
+                const container = el.ownerDocument.querySelector('#container');
+                const speedBox = container?.querySelector('.speedBox');
+                if (container?.contains(el) && speedBox) {
+                    const tab = [...container.querySelectorAll('.speedTab[rate]')]
+                        .find(item => Number(item.getAttribute('rate')) === rate);
+                    if (!tab) return false;
+                    try { tab.click(); } catch (_) { return false; }
+                    return el.playbackRate === rate
+                        && speedBox.querySelector('span')?.textContent?.trim() === `X ${rate === 1 ? '1.0' : rate}`;
+                }
+                try { el.playbackRate = rate; return el.playbackRate === rate; }
+                catch (_) { return false; }
+            }""", rate))
+
+    def pause_video(self) -> bool:
+        """暂停视频。助手手动暂停时靠它压住网站的自动续播。"""
+        video = self.video()
+        if video is None:
+            return False
+        return bool(video.evaluate("el => { el.pause(); return el.paused; }"))
 
     def resume(self) -> bool:
         if self.has_dialog():

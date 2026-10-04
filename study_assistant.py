@@ -12,13 +12,26 @@ from urllib.parse import urlsplit
 
 from answer_engine import ask_ai, match_bank
 from browser_adapter import CoursePage, DEFAULT_SELECTORS
+from image_text import ImageNotReadyError
+from cleanup import validate_retention
 from session_store import SessionStore
+import run_control
 from playwright.sync_api import Error as BrowserError, sync_playwright
 
 ROOT = Path(__file__).resolve().parent
+# 仅使用站点通用入口；课程标识由用户在本机 config.json 中填写。
 DEFAULT_URL = "https://studyvideoh5.zhihuishu.com/stuStudy"
 LOG = logging.getLogger("study")
 SESSIONS = SessionStore(ROOT / '.session' / 'auth.json')
+# 计时入口做成可替换的，测试可以注入快进时钟，不必真的等 15 秒。
+CLOCK = time.monotonic
+
+# 提交后等待网页反馈的时间；超时才判定弹题没有正常关闭。
+FEEDBACK_WAIT_SECONDS = 15
+RECOVERY_WINDOW_SECONDS = 45
+DIALOG_CONTENT_GRACE_SECONDS = 15
+NEXT_LESSON_RETRY_SECONDS = 20
+MAX_NEXT_LESSON_CLICKS = 3
 
 
 def load_config(path: Path) -> dict:
@@ -53,6 +66,8 @@ def load_config(path: Path) -> dict:
             raise ValueError(f"{name} 必须在 {low} 到 {high} 之间")
     if any(k not in DEFAULT_SELECTORS or not isinstance(v, str) for k, v in config["selectors"].items()):
         raise ValueError("selectors 包含未知名称或非字符串值")
+    # 诊断清理的保留策略也在这里校验，坏值会让 --check-config 直接报错。
+    config["diagnostics"] = validate_retention(config.get("diagnostics"))
     if config["browser_channel"] not in ("auto", "chrome", "msedge", "chromium"):
         raise ValueError("browser_channel 仅支持 auto、chrome、msedge、chromium")
     return config
@@ -84,8 +99,17 @@ def diagnostics(adapter: CoursePage) -> Path:
     return folder
 
 
+def mark_waiting() -> None:
+    """助手停在终端等回车时也要让控制台知道它还活着，否则页面会显示"无数据"。"""
+    state = dict(run_control.read_state(max_age=None) or {})
+    state.pop("updated_at", None)
+    state["waiting"] = True
+    run_control.write_state(state)
+
+
 def manual_pause(adapter: CoursePage, reason: str) -> None:
     LOG.warning(reason)
+    mark_waiting()
     SESSIONS.save(adapter.page.context)
     diagnostics(adapter)
     print("请在浏览器处理当前题目/提示，或调整配置后重启。")
@@ -111,15 +135,32 @@ def wait_for_course_ready(context, config: dict):
                 if SESSIONS.save(context):
                     LOG.info('登录状态已保存；下次启动会自动恢复有效会话')
                 return page
-        if time.monotonic() - notified > 30:
+        if CLOCK() - notified > 30:
             LOG.info('等待登录或打开课程视频页，无须回终端按回车')
-            notified = time.monotonic()
+            notified = CLOCK()
         try:
             context.pages[-1].wait_for_timeout(1000)
         except BrowserError:
             if not context.pages:
                 return None
     return None
+
+
+def page_is_transitioning(adapter: CoursePage) -> bool:
+    """视频已结束、或连视频状态都读不到时，控件短暂失效通常只是页面在切课。"""
+    try:
+        state = adapter.video_state()
+    except BrowserError:
+        return True
+    if state is None:
+        return True
+    return bool(state.get('ended'))
+
+
+def _error_detail(exc: Exception) -> str:
+    """只记录异常首行，限制长度，避免浏览器调用细节写入日志。"""
+    lines = str(exc).splitlines()
+    return f'{type(exc).__name__}: {(lines[0] if lines else "无详细信息")[:160]}'
 
 
 def run_loop(context, config: dict, inspect_only: bool = False) -> None:
@@ -141,8 +182,17 @@ def run_loop(context, config: dict, inspect_only: bool = False) -> None:
     next_since = 0.0
     last_status = 0.0
     last_time = None
-    stalled_since = time.monotonic()
+    stalled_since = CLOCK()
     last_session_save = 0.0
+    image_retry_since = None
+    browser_retry_since = None
+    dialog_empty_since = None
+    next_attempts = 0
+    next_retry_at = 0.0
+    next_unavailable_since = None
+    manual_paused = False
+    # 启动时以当前命令序号为基线：重启助手等于恢复自动播放，不继承上次的暂停状态
+    seen_seq = run_control.current_seq()
     while context.pages:
         page = course_page(context)
         if page is None:
@@ -153,25 +203,87 @@ def run_loop(context, config: dict, inspect_only: bool = False) -> None:
         if page != adapter.page:
             adapter = CoursePage(page, config["selectors"], config.get('ai'))
             pending_key = next_clicked = None
-        now = time.monotonic()
+            image_retry_since = browser_retry_since = dialog_empty_since = None
+            next_attempts = 0
+            next_unavailable_since = None
+            stalled_since, last_time = CLOCK(), None
+        now = CLOCK()
         try:
+            command = run_control.read_command(seen_seq)
+            if command is not None:
+                seen_seq = command["seq"]
+                if command["action"] == "pause":
+                    manual_paused = True
+                    LOG.info("收到控制台指令：暂停视频（弹题仍会自动处理）")
+                elif command["action"] == "resume":
+                    if manual_paused:
+                        # 暂停期间进度不动，这里不重置的话恢复后第一轮就会误判卡死
+                        stalled_since, last_time = CLOCK(), None
+                    manual_paused = False
+                    LOG.info("收到控制台指令：恢复播放")
+                else:
+                    # 倍速控制已移除：兼容旧控制台或手工写入的历史命令，但绝不
+                    # 通过助手修改播放器倍速，避免主动控制触发平台检测。
+                    LOG.warning("已忽略倍速控制指令；请在课程原生播放器菜单手动选择倍速")
+            try:
+                snapshot = adapter.video_state()
+            except BrowserError:
+                snapshot = None
+            recovery_has_video = snapshot is not None
+            run_control.write_state({
+                "applied_seq": seen_seq,
+                "rate": snapshot.get("rate") if snapshot else None,
+                "requested_rate": None,
+                "paused": snapshot.get("paused") if snapshot else None,
+                "manual_paused": manual_paused,
+                "time": snapshot.get("time") if snapshot else None,
+                "duration": snapshot.get("duration") if snapshot else None,
+                "lesson": adapter.lesson() if snapshot else None,
+                "waiting": False,
+            })
+            if manual_paused:
+                adapter.pause_video()
             if now - last_session_save > 30:
                 SESSIONS.save(context)
                 last_session_save = now
             if (pending_key or adapter.has_answer_feedback()) and adapter.has_dialog() and adapter.continue_after_answer():
                 LOG.info('已处理答题反馈，继续下一题或返回视频')
+                # 反馈处理完就清掉等待窗，否则同一题再弹出时会拿旧时间戳直接判超时。
+                pending_key, pending_since = None, CLOCK()
+                stalled_since, last_time = CLOCK(), None
+                image_retry_since = None
+                if recovery_has_video:
+                    browser_retry_since = None
                 page.wait_for_timeout(500)
                 continue
             # 先记录弹窗状态，避免弹窗在读题结束后刚出现就被误判为无法识别。
             had_dialog = adapter.has_dialog()
+            quiz_read_started = CLOCK()
             quiz = adapter.read_quiz()
+            # 读图/OCR 耗时不属于视频播放停滞时间。
+            stalled_since += CLOCK() - quiz_read_started
             if quiz:
+                dialog_empty_since = None
+                stalled_since, last_time = CLOCK(), None
                 key = adapter.submission_key(quiz.question)
                 if key in adapter.submitted:
-                    if now - pending_since > 15:
+                    if not pending_key:
+                        # 同一题再次弹出（平台重发或弹窗重渲染）：重新开一个等待窗，
+                        # 先尝试关闭它，绝不重复提交。
+                        pending_key, pending_since = key, now
+                        LOG.info('本题已提交过，弹窗再次出现，先尝试关闭，不重复提交')
+                    if adapter.continue_after_answer():
+                        LOG.info('已关闭重复弹窗')
+                        pending_key, pending_since = None, CLOCK()
+                        image_retry_since = None
+                        if recovery_has_video:
+                            browser_retry_since = None
+                        page.wait_for_timeout(500)
+                        continue
+                    if now - pending_since > FEEDBACK_WAIT_SECONDS:
                         manual_pause(adapter, "提交后弹题仍未关闭，请检查答题反馈")
-                        pending_key = None
-                        pending_since = time.monotonic()
+                        pending_key, pending_since = None, CLOCK()
+                        stalled_since, last_time = CLOCK(), None
                 else:
                     LOG.info("识别到%s：%s", "多选题" if quiz.question.multiple else "单选题", quiz.question.text)
                     answers = match_bank(quiz.question, bank)
@@ -181,21 +293,34 @@ def run_loop(context, config: dict, inspect_only: bool = False) -> None:
                         answers = ask_ai(quiz.question, config["ai"])
                     adapter.submit(quiz, answers)
                     answered_cache[quiz.question.fingerprint] = answers
-                    pending_key, pending_since = key, time.monotonic()
+                    pending_key, pending_since = key, CLOCK()
+                    stalled_since, last_time = CLOCK(), None
                     LOG.info("已提交选项：%s；等待网页反馈", ", ".join(str(i + 1) for i in answers))
             elif had_dialog:
-                if not pending_key or now - pending_since > 15:
+                stalled_since, last_time = CLOCK(), None
+                if dialog_empty_since is None:
+                    dialog_empty_since = now
+                if (pending_key and now - pending_since > FEEDBACK_WAIT_SECONDS) or (
+                        not pending_key and now - dialog_empty_since > DIALOG_CONTENT_GRACE_SECONDS):
                     manual_pause(adapter, "发现未识别的弹窗，请手动处理或提供诊断文件进行适配")
                     pending_key = None
+                    dialog_empty_since = None
+                    stalled_since, last_time = CLOCK(), None
             else:
+                dialog_empty_since = None
                 pending_key = None
                 state = adapter.video_state()
+                recovery_has_video = state is not None
                 if state is None:
-                    if now - stalled_since > 30:
+                    # 控件异常与缺失视频属于同一恢复过程，不能交替重开 45 秒窗口。
+                    if browser_retry_since is None:
+                        browser_retry_since = CLOCK()
+                    if CLOCK() - browser_retry_since > RECOVERY_WINDOW_SECONDS:
                         manual_pause(adapter, "尚未检测到视频，请进入课程视频页")
-                        stalled_since = time.monotonic()
+                    stalled_since, last_time = CLOCK(), None
                 elif state["error"]:
                     manual_pause(adapter, f"播放器错误码 {state['error']}，请检查网络或重新加载视频")
+                    stalled_since, last_time = CLOCK(), None
                 elif state["ended"]:
                     if next_clicked != state["key"]:
                         if not adapter.next_lesson():
@@ -204,29 +329,86 @@ def run_loop(context, config: dict, inspect_only: bool = False) -> None:
                                 continue  # 网站已自动切到下一节，不能误判为播放结束。
                             LOG.info("视频已结束，未找到可用的下一节按钮，停止运行。请核对课程进度。")
                             return
-                        next_clicked, next_since = state["key"], now
+                        next_clicked, next_since = state["key"], CLOCK()
+                        next_attempts = 1
+                        next_retry_at = next_since + NEXT_LESSON_RETRY_SECONDS
+                        next_unavailable_since = None
                         LOG.info("视频自然播放结束，已点击下一节")
-                    elif now - next_since > 20:
-                        manual_pause(adapter, "点击下一节后视频未切换，请手动检查课程目录")
-                        next_since = time.monotonic()
+                    elif now >= next_retry_at:
+                        if next_attempts >= MAX_NEXT_LESSON_CLICKS:
+                            manual_pause(adapter, "点击下一节后视频未切换，请手动检查课程目录")
+                            next_clicked = None
+                            next_attempts = 0
+                            stalled_since, last_time = CLOCK(), None
+                        elif adapter.next_lesson():
+                            next_attempts += 1
+                            next_since = CLOCK()
+                            next_retry_at = next_since + NEXT_LESSON_RETRY_SECONDS
+                            next_unavailable_since = None
+                            LOG.info("视频仍停在上一节，重试点击下一节（第 %d 次）", next_attempts)
+                        else:
+                            if next_unavailable_since is None:
+                                next_unavailable_since = now
+                            if now - next_unavailable_since > RECOVERY_WINDOW_SECONDS:
+                                manual_pause(adapter, "下一节按钮持续不可用，请检查课程目录")
+                                next_clicked = None
+                                next_attempts = 0
+                                next_unavailable_since = None
+                                stalled_since, last_time = CLOCK(), None
+                            next_retry_at = CLOCK() + config['poll_seconds']
+                    stalled_since, last_time = CLOCK(), None
                 else:
-                    adapter.resume()
-                    mark = (state["key"], int(state["time"]))
-                    if mark != last_time:
-                        last_time, stalled_since = mark, now
-                    elif now - stalled_since > 60:
-                        manual_pause(adapter, "播放进度 60 秒没有变化，请检查是否有未识别弹题、登录提示或网络问题")
-                        stalled_since = time.monotonic()
+                    if next_clicked is not None:
+                        next_clicked = None
+                        next_attempts = 0
+                        next_unavailable_since = None
+                        stalled_since, last_time = CLOCK(), None
+                    if manual_paused:
+                        stalled_since, last_time = CLOCK(), None
+                    else:
+                        adapter.resume()
+                        mark = (state["key"], int(state["time"]))
+                        if mark != last_time:
+                            last_time, stalled_since = mark, now
+                        elif now - stalled_since > 60:
+                            manual_pause(adapter, "播放进度 60 秒没有变化，请检查是否有未识别弹题、登录提示或网络问题")
+                            stalled_since, last_time = CLOCK(), None
                     if now - last_status > 30:
                         LOG.info("%s | %.0f / %.0f 秒", adapter.lesson(), state["time"], state["duration"])
                         last_status = now
+            image_retry_since = None
+            if recovery_has_video:
+                browser_retry_since = None
+        except ImageNotReadyError as exc:
+            if image_retry_since is None:
+                image_retry_since = CLOCK()
+            if CLOCK() - image_retry_since <= RECOVERY_WINDOW_SECONDS:
+                LOG.warning("图片暂不可用，稍后重试：%s", _error_detail(exc))
+                stalled_since, last_time = CLOCK(), None
+            else:
+                manual_pause(adapter, f"图片等待超时：{_error_detail(exc)}")
+                image_retry_since = None
+                pending_key = None
+                stalled_since, last_time = CLOCK(), None
         except ValueError as exc:
             manual_pause(adapter, str(exc))
             pending_key = None
-        except BrowserError:
+            stalled_since, last_time = CLOCK(), None
+        except BrowserError as exc:
             if page.is_closed():
                 continue
-            manual_pause(adapter, "网页控件已变化或操作超时，需要检查当前页面")
+            try:
+                transitioning = page_is_transitioning(adapter)
+            except BrowserError:
+                transitioning = True
+            if browser_retry_since is None:
+                browser_retry_since = CLOCK()
+            if transitioning and CLOCK() - browser_retry_since <= RECOVERY_WINDOW_SECONDS:
+                LOG.warning("视频已结束或页面正在切换，稍后重试本次检查：%s", _error_detail(exc))
+                stalled_since, last_time = CLOCK(), None
+            else:
+                manual_pause(adapter, f"网页控件已变化或操作超时，需要检查当前页面：{_error_detail(exc)}")
+                stalled_since, last_time = CLOCK(), None
         if not page.is_closed():
             page.wait_for_timeout(config["poll_seconds"] * 1000)
 
@@ -253,7 +435,8 @@ def launch_browser_context(playwright, config: dict, user_data_dir: Path):
             failures.append(f"{channel}: {exc}")
             if channel != candidates[-1]:
                 LOG.warning("无法启动 %s，尝试下一个浏览器", channel)
-    raise BrowserError(f"无法启动可用浏览器（{'；'.join(failures)}）")
+    detail = "；".join(failures)
+    raise BrowserError(f"无法启动可用浏览器（{detail}）")
 
 
 def main() -> int:
